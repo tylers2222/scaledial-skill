@@ -1,0 +1,20 @@
+{
+  "title": "Low-latency trading, box 1: the market-data path",
+  "narration": {
+    "provider": "kokoro",
+    "voice": "af_heart",
+    "speed": 1.0,
+    "aliases": {"FPGA": "F P G A"}
+  },
+  "beats": [
+    {"id": "intro", "component": "md-receive", "text": "Box one. How does a market data packet reach your trading strategy?"},
+    {"id": "path", "component": "md-receive", "text": "The exchange sends a packet. It lands on the network card. The operating system kernel copies it, processes it, and finally wakes up your program."},
+    {"id": "cost", "component": "md-receive", "text": "Every step costs time. Interrupts, system calls, and memory copies add up to tens of microseconds."},
+    {"id": "why", "component": "md-receive", "text": "So why use the kernel at all? It is simple, it is safe, and it is fast enough for most firms. If your edge is measured in milliseconds, stop here."},
+    {"id": "bypass", "component": "md-receive", "text": "Option two is kernel bypass. The network card writes packets straight into your program's memory. A pinned CPU core spins, and polls for new data. The kernel is out of the path."},
+    {"id": "bypass_cost", "component": "md-receive", "text": "The receive path drops to about a microsecond. The price is a dedicated core that always runs at one hundred percent, plus special network cards and software."},
+    {"id": "fpga", "component": "md-receive", "text": "Option three puts the decision on an FPGA, right next to the wire. The chip parses the packet and can send an order before a CPU even sees the data. That takes hundreds of nanoseconds."},
+    {"id": "fpga_cost", "component": "md-receive", "text": "The price is engineering time. Hardware logic is slow to change, so firms keep only the simplest and fastest decisions in silicon."},
+    {"id": "summary", "text": "So. Kernel sockets for milliseconds. Kernel bypass for microseconds. FPGA for nanoseconds. Next box: the order book."}
+  ]
+}

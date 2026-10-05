@@ -1,0 +1,11 @@
+__pycache__/
+*.egg-info/
+.venv/
+media/
+beats/
+qa/
+out/
+timeline.json
+evals/runs/
+*.onnx
+voices-*.bin

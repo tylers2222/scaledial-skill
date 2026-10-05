@@ -1,0 +1,57 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "script.schema.json",
+  "title": "Narration script",
+  "description": "Narration split into beats. Each beat becomes one audio clip and one timing slot.",
+  "type": "object",
+  "required": ["title", "narration", "beats"],
+  "additionalProperties": false,
+  "properties": {
+    "title": {"type": "string"},
+    "narration": {
+      "type": "object",
+      "required": ["provider"],
+      "additionalProperties": false,
+      "properties": {
+        "provider": {"enum": ["kokoro", "elevenlabs"]},
+        "voice": {"type": "string", "description": "Kokoro voice name (default af_heart) or ElevenLabs voice_id."},
+        "speed": {"type": "number", "minimum": 0.5, "maximum": 2.0},
+        "model_id": {"type": "string", "description": "ElevenLabs model id. Default eleven_multilingual_v2."},
+        "pronunciation_dictionaries": {
+          "type": "array",
+          "maxItems": 3,
+          "description": "ElevenLabs pronunciation dictionary locators.",
+          "items": {
+            "type": "object",
+            "required": ["pronunciation_dictionary_id"],
+            "additionalProperties": false,
+            "properties": {
+              "pronunciation_dictionary_id": {"type": "string"},
+              "version_id": {"type": "string"}
+            }
+          }
+        },
+        "aliases": {
+          "type": "object",
+          "description": "Spoken-form replacements applied to the voice text only, for any provider. Example: {\"FPGA\": \"F P G A\"}. Captions keep the original text.",
+          "additionalProperties": {"type": "string"}
+        },
+        "tail_pad": {"type": "number", "minimum": 0, "description": "Seconds of silence after each beat. Default 0.35."}
+      }
+    },
+    "beats": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["id", "text"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+          "component": {"type": "string", "description": "Plan component id this beat explains."},
+          "text": {"type": "string", "minLength": 1}
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,170 @@
+{
+  "title": "Startup with a microservices and container-orchestration design",
+  "audience": "Engineers and technical founders at early-stage companies. They know what a service, a container, a log, and a managed database are, and they have not yet run a platform for many teams.",
+  "input": "Assumed input design (scenario values, not measurements): a team of 4 engineers runs 12 microservices, each with its own repository, deploy pipeline, and database schema, on a container-orchestration cluster. Logs and metrics go to a hosted observability service billed per GB, at about 1 GB of logs a day. About 40 credentials live in the cloud provider's managed secret store and are synced into the cluster's secret objects. Card payments go through a hosted payment provider, so no card data enters the system.",
+  "scale_range": "Scenario values: team from 4 engineers (one team) to about 40 (several teams); logs from about 1 GB to about 30 GB a day; secrets from about 40 to a few hundred.",
+  "components": [
+    {
+      "id": "deploy-units",
+      "name": "Code deployment unit",
+      "job": "Package the product's code into units that can be built, tested, deployed, and rolled back, each with an owner.",
+      "contract": {
+        "independent_change": "A change to one area ships without waiting on unrelated work.",
+        "enforced_boundaries": "Module boundaries are checked automatically, so the code stays changeable and a module can be split out later.",
+        "ownership": "Every deployable unit has an owner who is on call for it.",
+        "blast_radius": "A fault is contained to one process type or rolled back quickly."
+      },
+      "axes": [
+        {
+          "name": "team_ops_capacity",
+          "value": "4 engineers own 12 deployable units: 12 repositories, 12 pipelines, and 12 on-call surfaces (scenario values)",
+          "notes": "Segment's 3 full-time engineers spent most of their time keeping 140+ services alive (https://www.twilio.com/en-us/blog/developers/best-practices/goodbye-microservices)."
+        },
+        {
+          "name": "change_rate",
+          "value": "One product team; most features change several services at once (scenario value)",
+          "notes": "Services that must deploy together are a 'networked monolith' (https://www.uber.com/blog/microservice-architecture/)."
+        },
+        {
+          "name": "isolation_compliance",
+          "value": "No card data in the system; payments go through a hosted provider (scenario value)",
+          "notes": "Not binding here. If card data entered the system, isolating that part could shrink PCI DSS scope even for a small team (https://listings.pcisecuritystandards.org/documents/Guidance-PCI-DSS-Scoping-and-Segmentation_v1.pdf)."
+        },
+        {
+          "name": "throughput",
+          "value": "Peak load fits one deployable unit running a few instances (scenario value)",
+          "notes": "Not binding: one large Q&A site served about 209 million HTTP requests a day from 9 web servers (https://nickcraver.com/blog/2016/02/17/stack-overflow-the-architecture-2016-edition/)."
+        }
+      ],
+      "binding_axis": "team_ops_capacity",
+      "outcome": "substitute_down",
+      "options": [
+        {
+          "band": "One team, or several teams that share one release train (this design: one team of 4 engineers)",
+          "pick": "Modular monolith: one repository, one build, one deploy pipeline; each former service becomes a module with an enforced public interface; web and worker run as two process types of the same build",
+          "why": "One pipeline, one set of dashboards, and one on-call rotation fit 4 people, and cross-module refactors stay cheap while boundaries are still moving. Segment merged 140+ services into one after 3 full-time engineers spent most of their time keeping them alive; afterwards one engineer could deploy in minutes.",
+          "cost": "Boundaries must be enforced by tooling instead of by the network. Less fault isolation: a crash in one module can take down its process (Segment's stated trade-off). A one-time migration to merge repositories and settle on one version of each shared dependency.",
+          "breaks_when": "Several teams block each other on the one release train: they need different release cadences, separate scaling, or fault isolation that one process cannot give.",
+          "evidence": {
+            "kind": "source",
+            "ref": "https://www.twilio.com/en-us/blog/developers/best-practices/goodbye-microservices",
+            "conditions": "Segment server-side destinations pipeline, 2018: 140+ destination services, about three new destinations a month, one small team."
+          }
+        },
+        {
+          "band": "Many teams that must deploy independently: Uber moved to services as it grew from tens to hundreds of engineers with multiple teams",
+          "pick": "Services along team and domain boundaries, each owned and on call by one team; split out first the modules whose teams need independent deploys",
+          "why": "Teams deploy and scale independently and own their code end to end.",
+          "cost": "A pipeline, alerts, dashboards, and an on-call surface per service; network calls and API versioning replace function calls. At about 2,200 critical services, Uber needed domain gateways and grouped its services into about 70 domains to keep the system understandable.",
+          "breaks_when": null,
+          "evidence": {
+            "kind": "source",
+            "ref": "https://www.uber.com/blog/microservice-architecture/",
+            "conditions": "Uber, 2020. The same post advises that in small organizations the operational benefit of microservices likely does not offset the added complexity."
+          }
+        }
+      ],
+      "migration": "Code: merge the 12 repositories into one; each service becomes a module whose public interface replaces its network API, and internal calls become in-process calls. Data: keep one database with one schema per module and no cross-module joins, so a module can leave later. Operations: one pipeline, one set of dashboards, one on-call rotation, and web and worker processes from the same build. The orchestration cluster then runs one image, which a managed application platform can host; that removes the cluster's upgrade cycle of about three minor releases a year (https://kubernetes.io/releases/release/).",
+      "teaching_moment": "Microservices solve a coordination problem between teams. A single team of 4 has no such problem to solve, only 12 pipelines to keep alive.",
+      "catalog": "crossovers/platform-ops.md"
+    },
+    {
+      "id": "secrets",
+      "name": "Secret store",
+      "job": "Keep credentials and API keys out of code and images, let each workload read only the secrets it needs, and record every read and change.",
+      "contract": {
+        "no_secrets_in_code": "No credential sits in the repository, an image, or a build log.",
+        "least_privilege": "Each workload identity can read only its own secrets.",
+        "audit": "Every read and change is recorded with who and when.",
+        "rotation": "A secret can rotate without a code change."
+      },
+      "axes": [
+        {
+          "name": "isolation_compliance",
+          "value": "12 service identities, each allowed to read only its own secrets; every read is audited (scenario values)",
+          "notes": "After the merge, one process holds every module's secrets, so access narrows to two process identities: web and worker."
+        },
+        {
+          "name": "cost",
+          "value": "About 40 secrets: about $16 a month at $0.40 per secret-month (scenario count; list price)",
+          "notes": "https://aws.amazon.com/secrets-manager/pricing/"
+        },
+        {
+          "name": "availability",
+          "value": "Secrets are read at process start and cached in memory (scenario value)",
+          "notes": "Reading a secret on every request would add per-call fees and use up the read quota; see the catalog trap."
+        },
+        {
+          "name": "team_ops_capacity",
+          "value": "Managed store: nothing to patch or upgrade"
+        }
+      ],
+      "binding_axis": "isolation_compliance",
+      "outcome": "keep",
+      "options": [
+        {
+          "band": "Any team size and secret count in this range; the store's default quotas sit far above it",
+          "pick": "Keep the cloud provider's managed secret store. Read secrets at process start, cache them in memory, refresh on rotation, and give the web and worker processes separate identities with separate read policies.",
+          "why": "Access policy, audit, and rotation are the contract, and none of them shrink with the team. At about 40 secrets the store costs about $16 a month at $0.40 per secret-month.",
+          "cost": "About $16 a month plus $0.05 per 10,000 reads, and a policy change when 12 service identities become 2 process identities.",
+          "breaks_when": null,
+          "evidence": {
+            "kind": "source",
+            "ref": "https://aws.amazon.com/secrets-manager/pricing/",
+            "conditions": "List prices for one provider, read October 2026; one cloud account; about 40 secrets is a scenario value. Default quotas of 500,000 secrets per region and 10,000 reads a second: https://docs.aws.amazon.com/secretsmanager/latest/userguide/reference_limits.html"
+          }
+        }
+      ],
+      "migration": "No change to the store itself. Access: replace 12 service identities with 2 process identities (web and worker), each allowed only the secrets its modules use. Stop syncing secrets into the cluster's own secret objects, which are stored unencrypted in etcd by default and readable by anyone who can create a Pod in the namespace (https://kubernetes.io/docs/concepts/configuration/secret/).",
+      "teaching_moment": "Some contracts do not shrink with the team. Who may read a credential, and the record of who did, matter as much for 4 engineers as for a large company, so the secret store stays while the services around it merge.",
+      "catalog": "crossovers/platform-ops.md"
+    },
+    {
+      "id": "logs-metrics",
+      "name": "Logs and metrics",
+      "job": "Capture each process's events and measurements so on-call engineers can search, graph, and alert on them during an incident.",
+      "contract": {
+        "emit_to_stdout": "The application writes structured events to stdout and never routes or stores them itself.",
+        "incident_search": "Recent events are searchable within minutes during an incident.",
+        "retention": "History covers the team's debugging window and any audit requirement.",
+        "alerting": "Alerts fire on user-facing symptoms and on the last successful run of each batch job."
+      },
+      "axes": [
+        {
+          "name": "cost",
+          "value": "About 30 GB of logs a month: $0 inside one hosted free tier, or about $13 a month on one cloud at $0.50 per GB after 5 free GB (scenario volume; list prices)",
+          "notes": "Free tier of 50 GB of logs and 10,000 active series a month: https://grafana.com/pricing/ . Per-GB price: https://aws.amazon.com/cloudwatch/pricing/"
+        },
+        {
+          "name": "data_volume",
+          "value": "About 1 GB of logs a day now, about 30 GB a day at the top of the range (scenario values)"
+        },
+        {
+          "name": "team_ops_capacity",
+          "value": "Nobody on the team runs storage clusters (scenario value)",
+          "notes": "A resilient self-hosted search cluster needs at least three master-eligible nodes (https://www.elastic.co/docs/deploy-manage/production-guidance/availability-and-resilience/resilience-in-small-clusters)."
+        }
+      ],
+      "binding_axis": "cost",
+      "outcome": "keep",
+      "options": [
+        {
+          "band": "From $0 up to an ingest bill that rivals the cost of a team running a self-hosted pipeline; this plan's range tops out near 30 GB a day, about $450 a month at $0.50 per GB",
+          "pick": "Keep the hosted observability service billed per GB and per series. The application keeps writing to stdout and the platform ships the stream. Add a module field to every log line and metric so per-module views survive the merge.",
+          "why": "Nothing to run. At today's volume the bill is about $13 a month at one cloud's list price ($0.50 per GB after 5 free GB), or $0 inside a hosted free tier.",
+          "cost": "Per-GB and per-series pricing grows with traffic and with careless labels, so it needs a budget alert and a review of metric labels.",
+          "breaks_when": null,
+          "evidence": {
+            "kind": "source",
+            "ref": "https://aws.amazon.com/cloudwatch/pricing/",
+            "conditions": "List prices read October 2026: standard log class in US East (N. Virginia), 5 GB free, then $0.50 per GB ingested. Volumes are scenario values. Hosted free tier of 50 GB of logs, 10,000 active series, and 14-day retention: https://grafana.com/pricing/"
+          }
+        }
+      ],
+      "migration": "None inside this range. Watch the monthly ingest bill and the active-series count. Revisit at multi-terabyte days: 1 TB a day is about $15,000 a month at $0.50 per GB (https://aws.amazon.com/cloudwatch/pricing/). Uber, at millions of logs a second, cut hardware cost by more than half with a self-hosted columnar pipeline (https://www.uber.com/blog/logging/). Keep user IDs and request IDs out of metric labels (https://prometheus.io/docs/practices/instrumentation/).",
+      "teaching_moment": "Here the axis that would force a change is money, not people, and the crossover is far away: a per-GB service stays cheaper until its bill could pay the team that would replace it.",
+      "catalog": "crossovers/platform-ops.md"
+    }
+  ],
+  "order": ["deploy-units", "secrets", "logs-metrics"]
+}

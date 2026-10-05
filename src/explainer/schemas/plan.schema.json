@@ -1,0 +1,102 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "plan.schema.json",
+  "title": "Scale plan",
+  "description": "Output of the scale-planner skill. One entry per component found in the input design. Every later stage (script, scenes, fact-check) reads this file.",
+  "type": "object",
+  "required": ["title", "audience", "input", "scale_range", "components", "order"],
+  "additionalProperties": false,
+  "properties": {
+    "title": {"type": "string", "minLength": 1},
+    "audience": {"type": "string", "description": "Who watches, and what they already know."},
+    "input": {"type": "string", "description": "Path or short description of the design that was planned."},
+    "scale_range": {"type": "string", "description": "The scale span the explanation covers, in the workload's own units."},
+    "components": {
+      "type": "array",
+      "minItems": 1,
+      "items": {"$ref": "#/$defs/component"}
+    },
+    "order": {
+      "type": "array",
+      "description": "Component ids in teaching order.",
+      "items": {"type": "string"},
+      "minItems": 1
+    }
+  },
+  "$defs": {
+    "component": {
+      "type": "object",
+      "required": ["id", "name", "job", "contract", "axes", "binding_axis", "outcome", "options", "teaching_moment", "catalog"],
+      "additionalProperties": false,
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_-]*$"},
+        "name": {"type": "string"},
+        "job": {"type": "string", "description": "What the component must do, with no product names."},
+        "contract": {
+          "type": "object",
+          "description": "Properties any substitute must keep (ordering, durability, consistency, latency budget, ...). A substitute that breaks one of these is not a valid substitute.",
+          "minProperties": 1,
+          "additionalProperties": {"type": "string"}
+        },
+        "axes": {
+          "type": "array",
+          "description": "Every scale axis that was considered for this component, with its value in the input design.",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["name", "value"],
+            "additionalProperties": false,
+            "properties": {
+              "name": {"type": "string"},
+              "value": {"type": "string"},
+              "notes": {"type": "string"}
+            }
+          }
+        },
+        "binding_axis": {"type": "string", "description": "The one axis that forces the choice. Must be one of the names in axes."},
+        "outcome": {"enum": ["keep", "substitute_up", "substitute_down", "split", "remove"]},
+        "options": {
+          "type": "array",
+          "description": "One entry per scale band. Length is whatever the component needs: 1 for keep is normal.",
+          "minItems": 1,
+          "items": {"$ref": "#/$defs/option"}
+        },
+        "migration": {"type": "string", "description": "What changes in code, data, and operations when moving between options."},
+        "teaching_moment": {"type": "string", "description": "The single insight this segment exists to teach."},
+        "catalog": {
+          "type": "string",
+          "description": "Catalog file consulted (for example crossovers/latency-path.md), or 'uncatalogued'."
+        }
+      }
+    },
+    "option": {
+      "type": "object",
+      "required": ["band", "pick", "why", "cost", "breaks_when", "evidence"],
+      "additionalProperties": false,
+      "properties": {
+        "band": {"type": "string", "description": "The scale band where this option fits, in the binding axis's units."},
+        "pick": {"type": "string"},
+        "why": {"type": "string"},
+        "cost": {"type": "string", "description": "What this option costs: money, operations, team skill, flexibility."},
+        "breaks_when": {
+          "type": ["string", "null"],
+          "description": "The condition on the binding axis where this option stops meeting the contract. null for the last option or for keep."
+        },
+        "evidence": {
+          "type": "object",
+          "required": ["kind"],
+          "additionalProperties": false,
+          "properties": {
+            "kind": {"enum": ["source", "rule_of_thumb", "unverified"]},
+            "ref": {"type": "string", "description": "URL or citation. Required when kind is source."},
+            "conditions": {"type": "string", "description": "Hardware, payload size, configuration, or team assumptions behind the numbers."}
+          },
+          "allOf": [
+            {"if": {"properties": {"kind": {"const": "source"}}}, "then": {"required": ["ref"]}},
+            {"if": {"properties": {"kind": {"const": "rule_of_thumb"}}}, "then": {"required": ["conditions"]}}
+          ]
+        }
+      }
+    }
+  }
+}

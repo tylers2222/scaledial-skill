@@ -1,0 +1,8 @@
+{
+  "name": "explainer-video",
+  "version": "0.1.0",
+  "description": "Scale-aware system-design explainer videos: plan per scale band, narrate, animate with Manim, and check facts.",
+  "author": {"name": "tylers2222"},
+  "repository": "https://github.com/tylers2222/explainer-video",
+  "keywords": ["explainer", "video", "manim", "system-design", "scale", "tts"]
+}

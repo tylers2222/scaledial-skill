@@ -1,0 +1,197 @@
+{
+  "title": "Ledger for a small fintech",
+  "audience": "Backend engineers who know SQL transactions and read replicas, have heard of distributed SQL and event streams, and have not run a money ledger in production.",
+  "input": "Proposed design for a small fintech: card authorizations, peer-to-peer transfers, and fee postings recorded as double-entry transactions in one relational primary (PostgreSQL); month-end statements, bank reconciliation, and finance analytics run as SQL against that same primary; a proposal to make the ledger active-active in two cloud regions before launch.",
+  "scale_range": "Input assumption: 1,000 to 200,000 customers in one country; 10,000 to 5,000,000 ledger transactions per month (about 0.004 to 2 per second on average, peaks assumed at 10 to 50 per second); 3 to 10 backend engineers and no dedicated database team.",
+  "components": [
+    {
+      "id": "ledger-store",
+      "name": "Ledger store",
+      "job": "Record every money movement as a balanced double-entry transaction, and decide each debit against the current balance so that no account overdraws.",
+      "contract": {
+        "atomicity": "All entries of a transaction commit together or not at all, and debits equal credits.",
+        "serialized_balance_check": "The sufficient-funds check and the debit it guards run as one serialized step per account; two concurrent debits cannot both spend the same funds.",
+        "durability": "No committed entry is lost when a node or a zone fails.",
+        "immutability": "Entries are append-only; a correction is a new reversing entry.",
+        "read_your_writes": "A balance read after a committed transfer includes that transfer."
+      },
+      "axes": [
+        {
+          "name": "consistency",
+          "value": "Per-account serialized balance checks; balanced, atomic multi-entry commits",
+          "notes": "Required at every volume in the range; it does not relax as the business grows."
+        },
+        {
+          "name": "throughput",
+          "value": "Input assumption: up to 5,000,000 transactions per month, about 2 per second on average, peaks assumed at 10 to 50 per second",
+          "notes": "Published single-primary relational ledgers sustain about 1,200 transfers/s (vendor load test, source: https://www.moderntreasury.com/journal/behind-the-scenes-how-we-built-ledgers-for-high-throughput) to about 10,600 transfers/s (laptop, stock settings, source: https://www.pgrs.net/2025/05/16/pgledger-in-postgresql-is-fast/), roughly 20 to 1,000 times the assumed peak."
+        },
+        {
+          "name": "contention",
+          "value": "One bank-settlement account and one fee account appear on most transactions",
+          "notes": "Under heavy hotspot skew, a relational primary with two synchronous standbys fell to 750 to 980 transfers/s with p50 latency of about 1.0 to 1.3 s (GCP 4 vCPU / 32 GB nodes, source: https://softwaremill.com/tigetbeetle-vs-postgresql-performance-benchmark-harness-cloud-tests/); the assumed peak is 10 to 50 per second."
+        },
+        {
+          "name": "durability",
+          "value": "Zero loss of committed entries on node or zone failure",
+          "notes": "Met by a synchronous standby in a second zone; region loss belongs to the regional-writes component."
+        },
+        {
+          "name": "team_ops_capacity",
+          "value": "Input assumption: 3 to 10 backend engineers, no dedicated database team",
+          "notes": "Favors one engine that the team already operates."
+        }
+      ],
+      "binding_axis": "consistency",
+      "outcome": "keep",
+      "options": [
+        {
+          "band": "Whole plan range, from the first customer to the assumed peak of 50 transfers per second: per-account serialized balance checks and atomic multi-entry commits are required at every volume",
+          "pick": "One relational database: an entries table, a per-account balance row updated in the same transaction as its entries, check constraints that reject unbalanced transactions, and a row lock on each debited balance",
+          "why": "One commit makes the entries balanced and atomic, and the row lock on the debited balance serializes the funds check with the debit, so the whole contract comes from features the team already uses. Measured headroom is large: on a laptop with stock settings this design ran about 10,600 transfers/s with 50 accounts and about 7,600 transfers/s with only 10 accounts, and about 1,600 transfers/s against a 2 vCPU hosted instance across a WAN.",
+          "cost": "One primary, a synchronous standby in a second zone, and point-in-time backups; routine database care; no new skills and no second system of record to reconcile.",
+          "breaks_when": null,
+          "evidence": {
+            "kind": "source",
+            "ref": "https://www.pgrs.net/2025/05/16/pgledger-in-postgresql-is-fast/",
+            "conditions": "M3 MacBook Air, stock PostgreSQL 17.5, 20 concurrent workers, 30 s runs: 10,637 transfers/s with 50 accounts and 7,559 transfers/s with 10 accounts; Neon free tier (2 vCPU, 8 GB RAM) across a WAN with 60 workers: 1,631 transfers/s; about 743 bytes per transfer including indexes."
+          }
+        }
+      ],
+      "migration": "None inside this range. If one account later becomes a lock queue, apply its entries that carry no balance condition asynchronously in batches inside the same database, and keep row locks only for guarded debits. Only near the limits of one primary after batching, evaluate per-customer cells or a purpose-built debit/credit engine; both need a migration of history and a period of parallel running with balance comparison.",
+      "teaching_moment": "In this range the ledger is limited by correctness, not capacity: the assumed peak sits far below what published single-primary relational ledgers sustain (see the throughput axis), and one relational database gives the whole contract in one commit. Each tempting upgrade buys capacity this business does not need by giving up part of that contract. Distributed SQL adds a replication round trip to every commit, and optimistic engines abort the loser of every race on the same account, so the hot settlement account gets slower, not faster. An event log with balance projections checks funds after the fact, so two debits can spend the same money. A key-value store or a cache resolves concurrent writes by last writer wins. A purpose-built debit/credit engine is the right answer far above this range; here it only adds a second system of record to reconcile. The first thing that growth breaks is one hot account, and its fix stays inside the same database.",
+      "catalog": "crossovers/consistency.md"
+    },
+    {
+      "id": "regional-writes",
+      "name": "Regional write topology",
+      "job": "Keep accepting ledger writes, and keep the committed ones, when a machine, a zone, or a whole cloud region fails.",
+      "contract": {
+        "single_commit_order": "Each account's entries have one commit order, so the ledger's balance checks stay serialized.",
+        "zone_failure": "No committed entry is lost when one zone fails, and writes resume after automatic failover.",
+        "region_failure": "Input assumption: when a whole region fails, the business accepts losing the last few seconds of entries (RPO of seconds) and up to one hour without writes (RTO), and replays the lost entries from bank and card-network records.",
+        "commit_latency": "Commit latency stays inside the synchronous card-authorization path."
+      },
+      "axes": [
+        {
+          "name": "availability",
+          "value": "Input assumption: 99.95% monthly target; region-loss RPO of seconds and RTO under one hour accepted",
+          "notes": "Multi-zone managed relational instances carry a 99.95% monthly SLA (source: https://aws.amazon.com/rds/sla/); cross-region asynchronous copies typically give RPO measured in seconds and RTO in minutes (source: https://docs.aws.amazon.com/AmazonRDS/latest/AuroraUserGuide/aurora-global-database-disaster-recovery.html)."
+        },
+        {
+          "name": "geography",
+          "value": "Input assumption: all customers in one country, served from one cloud region"
+        },
+        {
+          "name": "latency",
+          "value": "A synchronous cross-region commit adds at least one inter-region round trip to every write",
+          "notes": "Azure backbone 30-day P50 round trips: about 66 to 73 ms between US east and west regions, about 17 ms between West Europe and North Europe (source: https://learn.microsoft.com/en-us/azure/networking/azure-network-latency)."
+        },
+        {
+          "name": "consistency",
+          "value": "The ledger needs one serial commit order per account",
+          "notes": "Asynchronous active-active stores resolve concurrent writes to one item by last writer wins and apply multi-item transactions atomically only in the originating region (source: https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/V2globaltables_HowItWorks.html)."
+        },
+        {
+          "name": "team_ops_capacity",
+          "value": "Input assumption: 3 to 10 backend engineers, no dedicated database team",
+          "notes": "Cross-region failover drills and serialization-retry handling are standing work for this team."
+        }
+      ],
+      "binding_axis": "availability",
+      "outcome": "substitute_down",
+      "options": [
+        {
+          "band": "Availability target up to 99.95 to 99.99% per month, with region-loss RPO of seconds and RTO of minutes to one hour accepted",
+          "pick": "One write region: the primary with a synchronous standby in a second zone, plus an asynchronous replica or continuous backup in a second region that a tested runbook promotes",
+          "why": "Zone failures lose nothing and fail over automatically; every commit stays in one region with one serial order per account; and a region loss stays inside the stated RPO and RTO. Published monthly SLAs are 99.95% for multi-zone managed relational instances and 99.99% for a regional distributed SQL service (source: https://cloud.google.com/spanner/sla), both at or above the 99.95% target.",
+          "cost": "One standby and one cross-region copy; a restore or promotion drill each quarter; no change to application code.",
+          "breaks_when": "The business or a regulator requires zero loss of committed entries when a whole region fails (RPO = 0), or a 99.999% monthly write-availability target.",
+          "evidence": {
+            "kind": "source",
+            "ref": "https://aws.amazon.com/rds/sla/",
+            "conditions": "Monthly uptime commitment of 99.95% for Multi-AZ DB instances and Multi-AZ DB clusters; single-region managed service."
+          }
+        },
+        {
+          "band": "RPO = 0 on region loss, or a 99.999% monthly availability target",
+          "pick": "Consensus replication across at least three regions (multi-region distributed SQL with a region-failure survival goal)",
+          "why": "A commit is acknowledged only after replicas in other regions hold it, so a region loss loses no committed entry and writes continue in the remaining regions.",
+          "cost": "Every write pays at least one inter-region round trip, and serialized updates to a hot account fall to about one per round trip (rule of thumb: assumes each update waits for the previous cross-region commit on that row); capacity in three regions; retry handling for serialization failures in every transaction; regular cross-region failure drills.",
+          "breaks_when": null,
+          "evidence": {
+            "kind": "source",
+            "ref": "https://www.cockroachlabs.com/docs/stable/multiregion-survival-goals",
+            "conditions": "Vendor documentation: surviving a region failure requires at least three database regions and increases write latency by at least the round-trip time to the nearest region; reads are unaffected."
+          }
+        }
+      ],
+      "migration": "Substituting down from the proposal costs nothing now: build one write region with a zone standby and a cross-region copy, and do not build the second write region. Moving up later is a re-platforming project: migrate history into a consensus database that spans three regions, add retry loops for serialization failures to every transaction, re-test hot-account batching under the higher commit latency, and run both systems in parallel with balance comparison before cutover.",
+      "teaching_moment": "The proposed two-region active-active ledger is built for a requirement this business does not have, and it costs correctness. With asynchronous replication, two regions can accept conflicting debits, settle them by last writer wins, and show multi-entry transactions half-applied. With synchronous replication, surviving a region needs a third region, and every commit waits for an inter-region round trip. One write region with a zone standby and a cross-region copy meets the stated target; the trigger to move up is a zero-RPO requirement from the business or a regulator, not traffic.",
+      "catalog": "crossovers/consistency.md"
+    },
+    {
+      "id": "reporting",
+      "name": "Reporting and reconciliation queries",
+      "job": "Produce customer statements, month-end reconciliation against bank files, and finance analytics over the full entry history without slowing, blocking, or cancelling ledger writes.",
+      "contract": {
+        "exact_totals": "Report totals match the ledger to the cent at the reported cut-off.",
+        "snapshot": "Each report reads one consistent snapshot of committed entries.",
+        "freshness": "Input assumption: finance reports may lag the ledger by up to one day; statements run after period close.",
+        "write_isolation": "Report queries never delay, block, or cancel ledger writes."
+      },
+      "axes": [
+        {
+          "name": "data_volume",
+          "value": "Input-derived: about 0.3 GB at the bottom of the range to about 45 GB after one year and about 130 GB after three years at the top (360,000 to 180,000,000 transactions over three years)",
+          "notes": "Rule of thumb: about 743 bytes per transfer including indexes, measured for one PostgreSQL ledger schema (source: https://www.pgrs.net/2025/05/16/pgledger-in-postgresql-is-fast/); schemas with more entries per transaction or more columns will be larger."
+        },
+        {
+          "name": "throughput",
+          "value": "Input assumption: a few analysts plus nightly and month-end jobs; low query concurrency"
+        },
+        {
+          "name": "consistency",
+          "value": "Snapshot reads with exact totals at a cut-off",
+          "notes": "Met by a replica snapshot, or by a change-data-capture copy whose totals are checked against the ledger."
+        },
+        {
+          "name": "latency",
+          "value": "Input assumption: batch reports may take minutes"
+        }
+      ],
+      "binding_axis": "data_volume",
+      "outcome": "split",
+      "options": [
+        {
+          "band": "Ledger data smaller than the reporting replica's memory (input-derived with the 743-bytes-per-transfer rule of thumb on the data_volume axis: about 0.3 GB at launch, about 45 GB after one year at the top of the range)",
+          "pick": "Run reports on a streaming read replica of the ledger database, with a read-only reporting role and statement timeouts",
+          "why": "Same SQL and data model, snapshot reads, no report load on the primary, and no pipeline to build.",
+          "cost": "One more database instance; replay-delay and query-cancellation settings to tune.",
+          "breaks_when": "Reports scan more data than the replica holds in memory and run for minutes: replay conflicts from the heavily updated balance rows cancel standby queries after max_standby_streaming_delay (default 30 s), and the hot_standby_feedback workaround bloats the primary.",
+          "evidence": {
+            "kind": "source",
+            "ref": "https://www.postgresql.org/docs/current/hot-standby.html",
+            "conditions": "PostgreSQL hot standby query conflicts; default max_standby_streaming_delay of 30 s per https://www.postgresql.org/docs/current/runtime-config-replication.html."
+          }
+        },
+        {
+          "band": "Ledger data several times larger than the replica's memory (input-derived with the same rule of thumb: about 130 GB after three years at the top of the range), or reports that scan most of the history",
+          "pick": "Column store fed from the ledger by change data capture or a nightly export of committed entries, with a daily check that its totals equal ledger totals",
+          "why": "A column store reads only the columns a report needs, compressed. On one 16 vCPU / 32 GiB VM with network block storage, an untuned row store took about 258 s to count a 100-million-row table (about 106 GB on disk), while an untuned embedded column store ran all 43 benchmark queries in about 26 s total.",
+          "cost": "A pipeline to run and monitor; reports lag the ledger by the pipeline delay; a second SQL dialect; a daily reconciliation job.",
+          "breaks_when": null,
+          "evidence": {
+            "kind": "source",
+            "ref": "https://github.com/ClickHouse/ClickBench",
+            "conditions": "ClickBench on AWS c6a.4xlarge (16 vCPU, 32 GiB RAM, 500 GB gp2), 99,997,497-row flat web-analytics table, 43 queries, hot runs: PostgreSQL result of 2026-09-21, untuned, 106 GB on disk, COUNT(*) about 258 s, all queries about 11,875 s; DuckDB result of 2026-05-11, untuned, 20 GB on disk, all queries about 26 s. Benchmark maintained by a column-store vendor; rows are wide analytics rows, not ledger rows."
+          }
+        }
+      ],
+      "migration": "Step 1: point report jobs at a streaming replica (connection string, read-only reporting role, statement timeouts). Step 2: stream committed entries into a column store by change data capture or a nightly export, run old and new reports side by side for one month-end close, and switch when totals match to the cent; keep the daily totals check afterwards.",
+      "teaching_moment": "Reporting is the part of this design that does change inside the range, and the axis that forces it is data volume, not request rate. The month-end queries that are instant at launch become multi-minute scans that a busy replica cancels. Splitting reads away from the ledger, first to a replica and later to a column store fed from the ledger's committed changes, protects the ledger without touching its contract; the totals check is what keeps the copy honest.",
+      "catalog": "crossovers/consistency.md"
+    }
+  ],
+  "order": ["ledger-store", "regional-writes", "reporting"]
+}

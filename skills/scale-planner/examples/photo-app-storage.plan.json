@@ -1,0 +1,200 @@
+{
+  "title": "Photo-sharing app: storage",
+  "audience": "Web and mobile developers who have shipped a CRUD app on one relational database and one storage bucket. They know what an HTTP cache header is, but have not run a CDN, an image pipeline, or a search cluster.",
+  "input": "Example design (described, not a file): a photo-sharing app whose app servers write each uploaded photo to one object-store bucket, and whose viewers load photos straight from that bucket through pre-signed URLs. After each upload, a background worker writes three resized copies (feed, grid, full screen) to the same bucket. Captions and tags live in the relational database; a sync job copies them into a dedicated three-node search cluster that serves caption search.",
+  "scale_range": "Assumed for this example, not measured: from launch (about 1,000 monthly active users in one country, about 100 uploads a day) to about 1,000,000 monthly active users on several continents, about 100,000 uploads a day (about 1.2 per second on average), and about 20 million photo views a day (about 230 per second on average).",
+  "components": [
+    {
+      "id": "photo-store-delivery",
+      "name": "Photo storage and delivery",
+      "job": "Keep every uploaded photo and its resized copies without loss, and get them onto viewers' screens quickly wherever the viewers are.",
+      "contract": {
+        "durability": "An upload that the app acknowledged is never lost.",
+        "read_your_writes": "The uploader sees a new photo right after the upload succeeds.",
+        "access_control": "Private and friends-only photos are readable only through short-lived signed links.",
+        "revocation": "A deleted photo, or one made private, stops being served within a few minutes (assumed product requirement).",
+        "latency": "Feed thumbnails load without a visible stall for viewers on every continent the app serves."
+      },
+      "axes": [
+        {
+          "name": "fan_out",
+          "value": "Assumed: a few views per photo at launch; about 200 views per photo on average at the top of the range (20 million views a day divided by 100,000 uploads a day), with viral photos far higher.",
+          "notes": "Binding. A cache near viewers helps only when the same photo is read many times; at launch most reads are first reads, so a cache would have little to hit."
+        },
+        {
+          "name": "geography",
+          "value": "Assumed: one country at launch; several continents at the top of the range.",
+          "notes": "Each read from a far region pays a full round trip to the storage region: at least 160 ms New York to Sydney in fiber, 200 to 300 ms in practice (https://hpbn.co/primer-on-latency-and-bandwidth/). Geography sets how much each cache hit saves; fan-out sets how many hits there are."
+        },
+        {
+          "name": "data_volume",
+          "value": "Assumed: originals of about 2 MB; up to about 200 GB of new originals a day (about 70 TB a year) at the top of the range.",
+          "notes": "Does not bind. The object store has no capacity to plan, and its price per GB-month falls slightly with volume (https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/current/us-east-1/index.json)."
+        },
+        {
+          "name": "cost",
+          "value": "Assumed: feed copies of about 100 KB; about 2 TB of photo egress a day (about 60 TB a month) at the top of the range.",
+          "notes": "Does not decide the split. The first price tiers for egress from the bucket ($0.09/GB) and from a CDN ($0.085/GB after 1 TB a month free, US and Europe) differ by about 5% (https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/current/us-east-1/index.json ; https://aws.amazon.com/cloudfront/pricing/pay-as-you-go/)."
+        },
+        {
+          "name": "durability",
+          "value": "Required: zero loss of acknowledged uploads.",
+          "notes": "Met by the object store in every band (designed for 99.999999999% durability in one provider's docs, https://docs.aws.amazon.com/AmazonS3/latest/userguide/storage-class-intro.html). The split does not change it."
+        },
+        {
+          "name": "consistency",
+          "value": "Required: read-your-writes for the uploader; deletes and privacy changes take effect within a few minutes (assumed).",
+          "notes": "The bucket gives strong read-after-write (https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html#ConsistencyModel). Edge caches do not, and that is the split's main cost."
+        }
+      ],
+      "binding_axis": "fan_out",
+      "outcome": "split",
+      "options": [
+        {
+          "band": "Launch to moderate fan-out: viewers mostly in one region near the bucket, and most photos read by a few people",
+          "pick": "One store does both jobs: the object-store bucket keeps the photos and serves every read through pre-signed URLs.",
+          "why": "One system and one access-control model. The bucket is strongly consistent, so a delete or a privacy change applies to the next read. Its documented read capacity, at least 5,500 GET requests per second per key prefix, is far above this band's load.",
+          "cost": "Storage at $0.023 per GB-month (first 50 TB), GET requests at $0.0004 per 1,000, and internet egress at $0.09/GB after the first 100 GB a month (us-east-1 list prices, September 2026).",
+          "breaks_when": "Fan-out grows: popular photos are re-read by many viewers, and viewers spread to other continents. Each re-read then pays bucket egress and a full round trip to the storage region (small-object first-byte latency is already roughly 100 to 200 ms, and a New York to Sydney fiber round trip adds at least 160 ms), and one viral photo can reach its prefix's read rate of 5,500 per second.",
+          "evidence": {
+            "kind": "source",
+            "ref": "https://docs.aws.amazon.com/AmazonS3/latest/userguide/optimizing-performance.html ; https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AmazonS3/current/us-east-1/index.json ; https://pricing.us-east-1.amazonaws.com/offers/v1.0/aws/AWSDataTransfer/current/us-east-1/index.json ; https://hpbn.co/primer-on-latency-and-bandwidth/",
+            "conditions": "One provider's documented per-prefix rates and its us-east-1 list prices (price list published 2026-09-28). Round-trip figures are great-circle fiber minimums; real routes are slower."
+          }
+        },
+        {
+          "band": "Higher fan-out: feeds show each photo to many followers, popular photos are read thousands of times, and viewers are on several continents",
+          "pick": "Split. Storage: the same bucket stays the store of record for uploads, originals, and resized copies. Delivery: a CDN in front of the bucket serves every read, with content-hashed URLs, long browser cache lifetimes, and CDN-signed URLs or cookies for private photos.",
+          "why": "A popular photo crosses from the bucket to each edge once per cache lifetime instead of once per viewer, and hits are served near the viewer. Fetches from a same-provider bucket are free, and CDN egress is $0.085/GB after 1 TB a month free (US and Europe). Browser caches add free capacity: in Facebook's measurement they served 65.5% of photo requests. Instagram used the same pair in 2011, at 14 million users with 3 engineers, to speed up image loads in Japan.",
+          "cost": "CDN HTTPS requests at $0.0100 per 10,000 in North America after 10 million a month, plus egress, plus key management for signed links. Consistency cost: the bucket is strongly consistent but edge copies are not, so a deleted or newly private photo can still be served until its cache lifetime ends or an invalidation finishes (1,000 invalidation paths a month free, then $0.005 per path). Short cache lifetimes on private photos and new keys for new versions keep that window small.",
+          "breaks_when": null,
+          "evidence": {
+            "kind": "source",
+            "ref": "https://aws.amazon.com/cloudfront/pricing/pay-as-you-go/ ; https://www.cs.cornell.edu/~qhuang/papers/sosp_fbanalysis.pdf ; https://medium.com/instagram-engineering/what-powers-instagram-hundreds-of-instances-dozens-of-technologies-adf2e22da2ad ; https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html#ConsistencyModel",
+            "conditions": "One CDN's pay-as-you-go list prices for North America and Europe, September 2026. Facebook's 65.5% comes from a month-long 2013 trace of desktop browsers."
+          }
+        }
+      ],
+      "migration": "No data moves. Put the CDN in front of the existing bucket, switch photo URLs to the CDN hostname with content-hashed keys, set long cache lifetimes on public copies and short ones on private copies, and move private-photo authorization from bucket pre-signed URLs to CDN-signed URLs or cookies. Add an invalidation call to the delete and make-private paths. Beyond this range, a long tail of reads across many edge locations is the cue for a mid-tier cache in front of the bucket (see the catalog).",
+      "teaching_moment": "Storage and delivery scale on different axes: bytes stored grow with uploads, but bytes served grow with uploads times viewers times distance. When fan-out grows, the read path splits off into caches near the viewers, and the store itself does not change.",
+      "catalog": "crossovers/storage-delivery.md"
+    },
+    {
+      "id": "thumbnails",
+      "name": "Resized photo copies",
+      "job": "Make the smaller copies of each photo that the feed, grid, and full-screen views need.",
+      "contract": {
+        "sizes": "Exactly the three sizes the layouts request (feed, grid, full screen).",
+        "readiness": "Copies exist before the photo reaches followers' feeds; until then the app shows a placeholder.",
+        "fidelity": "Orientation and color are preserved.",
+        "access": "Copies inherit the original's privacy setting and are deleted with it."
+      },
+      "axes": [
+        {
+          "name": "change_rate",
+          "value": "Assumed: three fixed sizes; the size set changes about once a year.",
+          "notes": "Binding. Each new size needs a backfill over every stored original. Only a fast-growing or fast-changing set of sizes or formats would justify on-demand resizing."
+        },
+        {
+          "name": "throughput",
+          "value": "Assumed: up to about 100,000 uploads a day (about 1.2 per second); with a 10x peak factor, about 12 uploads or 35 resize operations per second.",
+          "notes": "Does not bind. One 4-vCPU cloud instance did about 88 JPEG resizes per second in a published benchmark (https://sharp.pixelplumbing.com/performance/), and each photo is independent, so more workers add capacity roughly linearly."
+        },
+        {
+          "name": "data_volume",
+          "value": "Assumed: three copies a few hundred pixels wide per photo, much smaller than the 2 MB original.",
+          "notes": "Does not bind; the copies live in the same object store as the originals."
+        },
+        {
+          "name": "cost",
+          "value": "Worker CPU proportional to uploads times sizes; small at this range.",
+          "notes": "For comparison, one on-demand image service bills $0.50 per 1,000 unique transformations a month after 5,000 free (https://developers.cloudflare.com/images/pricing/)."
+        }
+      ],
+      "binding_axis": "change_rate",
+      "outcome": "keep",
+      "options": [
+        {
+          "band": "The whole range (about 100 to 100,000 uploads a day, assumed), as long as the layouts need a small fixed set of sizes",
+          "pick": "Eager resizing: after each upload, a background worker makes the three sizes once and stores them next to the original in the bucket; the CDN serves them like any other file.",
+          "why": "Each photo is decoded once, and every later view is a plain cached file read. Work per photo is independent, so throughput grows by adding workers. A published benchmark measured about 88 JPEG resizes per second on one 4-vCPU cloud instance, against an assumed peak of about 35 per second here. Facebook ran the same pattern, storing four sizes per upload, at 120 million uploads a day.",
+          "cost": "Worker CPU per upload times three sizes; storage for three small copies per photo; a one-time backfill job whenever a size is added.",
+          "breaks_when": null,
+          "evidence": {
+            "kind": "source",
+            "ref": "https://sharp.pixelplumbing.com/performance/ ; https://www.usenix.org/legacy/event/osdi10/tech/full_papers/Beaver.pdf",
+            "conditions": "Benchmark: AWS c8a.xlarge (4 vCPU, AMD EPYC 9R45), Ubuntu 25.10, Node.js 24, sharp 0.35.0 with libvips 8.18.2 and its cache disabled; decode a 2725x2225 JPEG, resize to 720x588 with Lanczos 3, encode at quality 80. Phone photos larger than this input cost more per operation. The Facebook figures are from its 2010 paper."
+          }
+        }
+      ],
+      "migration": "None inside the range. If layouts later need many sizes or formats, add on-demand resizing behind the CDN for the new sizes and keep the three eager sizes; the originals stay in the bucket, so no data moves.",
+      "teaching_moment": "The tempting upgrade is an on-demand image-resizing service because uploads grew. Upload volume never forces it, since resizing scales by adding workers; only a growing number of sizes or formats would.",
+      "catalog": "crossovers/storage-delivery.md"
+    },
+    {
+      "id": "caption-search",
+      "name": "Caption and tag search",
+      "job": "Find photos whose caption or tags contain the words a user types, newest first, showing only photos the searcher may see.",
+      "contract": {
+        "visibility": "Results never include a photo the searcher may not see, including right after a privacy change.",
+        "freshness": "A new or edited caption is searchable as soon as it is saved.",
+        "matching": "Word-form matching (stemming) on short captions and tags; typo tolerance is not required in this design.",
+        "ordering": "Newest matches first; no relevance ranking is required."
+      },
+      "axes": [
+        {
+          "name": "team_ops_capacity",
+          "value": "Assumed: 3 to 8 engineers, none dedicated to search.",
+          "notes": "Binding. The cluster brings its own upgrades, capacity planning, and a sync pipeline to build and watch, whatever the data size."
+        },
+        {
+          "name": "data_volume",
+          "value": "Assumed: up to about 100,000 new captions a day, about 37 million rows after one year at the top of the range; each caption is one sentence or a few tags.",
+          "notes": "Query cost follows rows matched per query when results are ranked by relevance; ordering by an indexed column such as upload time avoids that cost."
+        },
+        {
+          "name": "consistency",
+          "value": "Required: new captions and privacy changes are visible to the next search.",
+          "notes": "An index inside the database commits with the row. A separate cluster is near-real-time at best: one engine refreshes every second by default, and the sync pipeline adds its own lag (https://docs.aws.amazon.com/opensearch-service/latest/developerguide/bp.html)."
+        },
+        {
+          "name": "cost",
+          "value": "Given design: three search nodes plus a sync job, running around the clock.",
+          "notes": "The smallest search-cluster layout that survives one node loss is two data nodes plus a tiebreaker (https://www.elastic.co/docs/deploy-manage/production-guidance/availability-and-resilience/resilience-in-small-clusters)."
+        }
+      ],
+      "binding_axis": "team_ops_capacity",
+      "outcome": "substitute_down",
+      "options": [
+        {
+          "band": "The whole range, while the captions table lives on one database primary (assumed true up to about 1,000,000 monthly active users)",
+          "pick": "Full-text index inside the existing relational database: a text-search column with an inverted (GIN-type) index, queried in the same SQL statement as the visibility rules and ordered by upload time.",
+          "why": "No second store and no sync pipeline: a caption and its index entry commit in one transaction, so new captions and privacy changes apply to the next search. In a published test on 2.3 million rows, a rare-term query took 3 to 100 ms, and ordering about 1 million matches by an indexed column took about 25 ms.",
+          "cost": "Extra index storage and write work on the primary. Built-in ranking is basic (it uses no corpus-wide statistics), which this contract does not need.",
+          "breaks_when": "The product starts to need relevance ranking over common words (ranking 1,038,914 matches took 8 to 25 s in the same test), typo tolerance, or facets; or the photo tables are sharded across database servers, so no single index sees every caption. Instagram moved its geo-search off its database at that point.",
+          "evidence": {
+            "kind": "source",
+            "ref": "https://xata.io/blog/postgres-full-text-search-postgres-vs-elasticsearch ; https://www.postgresql.org/docs/current/textsearch-controls.html ; https://medium.com/instagram-engineering/what-powers-instagram-hundreds-of-instances-dozens-of-technologies-adf2e22da2ad",
+            "conditions": "Xata test: a 2.3-million-row recipe dataset in PostgreSQL with a GIN-indexed tsvector column, five runs per query with best and worst times reported; hardware is not stated, and the author calls the method rather unscientific. Captions are shorter than recipes. The one-primary limit at about 1,000,000 monthly active users is this example's assumption, not a measured limit."
+          }
+        },
+        {
+          "band": "Beyond this plan's range: sharded photo tables, or relevance ranking, typo tolerance, or facets become product requirements",
+          "pick": "The given design: a dedicated search cluster, fed from the database by change data capture.",
+          "why": "Relevance ranking with corpus statistics, fuzzy matching, and facets are built in, and shards spread the index across servers (vendor guidance: 10 to 50 GB and fewer than 200 million documents per shard).",
+          "cost": "At least two data nodes plus a tiebreaker node to survive one node loss, and one managed service recommends three dedicated master nodes across three zones. Also a sync pipeline to build and watch, visibility rules copied into the index, and results that lag writes by the refresh interval plus pipeline delay.",
+          "breaks_when": null,
+          "evidence": {
+            "kind": "source",
+            "ref": "https://www.elastic.co/docs/deploy-manage/production-guidance/availability-and-resilience/resilience-in-small-clusters ; https://www.elastic.co/docs/deploy-manage/production-guidance/optimize-performance/size-shards ; https://docs.aws.amazon.com/opensearch-service/latest/developerguide/bp.html",
+            "conditions": "Vendor guidance for self-managed clusters and one managed service's best practices. The vendor calls shard sizes starting points to benchmark on production data and hardware."
+          }
+        }
+      ],
+      "migration": "Add a text-search column and an inverted index to the captions table (built without blocking writes), point search at one SQL query that joins the visibility rules, run old and new search side by side and compare results, then retire the sync job and the cluster. Going back later means standing up the cluster, backfilling it from the database, and streaming changes into it.",
+      "teaching_moment": "A dedicated search cluster has a fixed floor of several nodes and a sync pipeline, whatever the data size. While the captions fit on one database, the database's own text index answers the same queries, and it is fresher, because the index commits with the row.",
+      "catalog": "crossovers/storage-delivery.md"
+    }
+  ],
+  "order": ["photo-store-delivery", "thumbnails", "caption-search"]
+}

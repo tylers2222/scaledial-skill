@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "timeline.schema.json",
+  "title": "Timeline",
+  "description": "Written by `explainer tts`. Scenes read it; nobody edits it by hand.",
+  "type": "object",
+  "required": ["total", "beats"],
+  "additionalProperties": false,
+  "properties": {
+    "total": {"type": "number"},
+    "beats": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "wav", "start", "audio", "slot", "words_source", "words"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {"type": "string"},
+          "component": {"type": "string"},
+          "wav": {"type": "string"},
+          "start": {"type": "number"},
+          "audio": {"type": "number"},
+          "slot": {"type": "number"},
+          "words_source": {"enum": ["elevenlabs", "estimated"]},
+          "words": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["word", "start", "end"],
+              "additionalProperties": false,
+              "properties": {
+                "word": {"type": "string"},
+                "start": {"type": "number"},
+                "end": {"type": "number"}
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

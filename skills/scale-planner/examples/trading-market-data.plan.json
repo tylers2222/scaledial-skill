@@ -1,0 +1,211 @@
+{
+  "title": "Low-latency trading: market-data path",
+  "audience": "Software engineers who know Linux, TCP and UDP sockets, and multithreaded code, and have not built an exchange feed handler or worked under broker-dealer rules.",
+  "input": "Design under review: the market-data path of a US proprietary trading firm colocated at one equities venue. (1) Receive path: the venue's UDP multicast depth feed, on redundant A and B lines, enters one strategy process through the kernel socket API on a standard NIC. (2) Clock synchronization: every server takes time from a GNSS-disciplined PTP grandmaster through hardware-timestamping NICs and PTP-aware switches, copied from a high-frequency trading reference design. (3) Order-event journal: a separate thread appends every order event that the strategy produces to a local file; a nightly job loads the file into a database for the next-day regulatory report; a daytime job reconciles the file with the venue's drop-copy session. Order entry and pre-trade risk checks are reviewed separately and are not part of this input.",
+  "scale_range": "Input assumption: from a 2-to-5-person systematic firm whose signals stay valid for milliseconds or longer (tick-to-trade budget around 1 ms) to a market maker that competes for queue position against traders whose order path is in hardware (tick-to-trade budget below about 2 µs); thousands to a few million order events per day; US venues only.",
+  "components": [
+    {
+      "id": "md-receive",
+      "name": "Market-data receive path",
+      "job": "Move the venue's multicast market-data packets from the wire into the strategy's decision code, in sequence, fast enough that the decision lands before competitors act on the same update.",
+      "contract": {
+        "sequencing": "Every packet of each feed channel is processed in sequence-number order; a gap is detected and filled from the venue's re-request or snapshot service, never skipped silently.",
+        "redundancy": "The A and B lines are arbitrated, so a packet lost on one line is taken from the other.",
+        "no_silent_drops": "The host drops no packet during bursts; if it ever does, the gap is detected and recovered like a network loss.",
+        "latency_budget": "Wire-to-decision latency, tails included, stays inside the firm's tick-to-trade budget for its band."
+      },
+      "axes": [
+        {
+          "name": "latency",
+          "value": "Input assumption: tick-to-trade budget from around 1 ms at the small end to below about 2 µs at the top end",
+          "notes": "The budget is set by how fast the fastest competitor reacts to the same update. Measured paths: tuned kernel UDP round trip about 31 µs average (source: https://blog.cloudflare.com/how-to-achieve-low-latency/); kernel-bypass mean of 2.3 µs half round trip (source: https://www.supermicro.com/en/pressreleases/supermicro-redhat-and-solarflare-set-world-record-performance-mark-double-digit); FPGA tick-to-trade minimum 13.9 ns (source: https://docs.stacresearch.com/news/AMD240422)."
+        },
+        {
+          "name": "throughput",
+          "value": "Input assumption: one venue's equities depth feed; the input gives no peak burst rate",
+          "notes": "Check the venue's published peak rates before accepting the kernel band: one kernel receive core topped out near 350,000 packets/s in a 2015 test (source: https://blog.cloudflare.com/how-to-receive-a-million-packets/). For comparison, the full US options feed is projected to burst to about 169,000 packets per 10 ms per stream in mid-2026 (source: https://cdn.opraplan.com/documents/notices/OPRA_Capacity_Projections_Update_0925.pdf); a design that took that feed would bind on throughput first."
+        },
+        {
+          "name": "team_ops_capacity",
+          "value": "Input assumption: 2 to 5 software engineers at the small end; hardware (RTL) engineers only at the top end",
+          "notes": "FPGA logic needs hardware design skills and simulation-based testing that a small software team does not have."
+        },
+        {
+          "name": "change_rate",
+          "value": "Input assumption: strategy logic changes weekly at the small end; parameters change daily at every scale",
+          "notes": "Logic in hardware changes on hardware build-and-test cycles; parameters loaded from software can still change daily."
+        },
+        {
+          "name": "cost",
+          "value": "Input assumption: hardware and licence spend grows with the revenue that speed earns",
+          "notes": "Kernel bypass adds supported NICs, licence activation on some adapters, and cores that spin continuously; FPGA adds cards, network IP cores, and hardware engineers."
+        }
+      ],
+      "binding_axis": "latency",
+      "outcome": "substitute_up",
+      "options": [
+        {
+          "band": "Tick-to-trade budget from around 1 ms down to roughly 100 µs: signals stay valid for milliseconds, and no competitor wins by reacting faster",
+          "pick": "Kernel UDP sockets, tuned: busy polling, the receive thread pinned to a core away from the NIC interrupt core, interrupt coalescing off",
+          "why": "Needs no special hardware, licences, or skills. On 10GbE with 32-byte UDP payloads, tuning cut the round trip from about 60 µs average (44 µs minimum) to about 31 µs average (26 µs minimum), and the kernel took about 4 µs to hand a packet to a busy-polling process. That is a small share of a budget of 100 µs or more.",
+          "cost": "One busy-polling core per feed handler; a tuning checklist (interrupt affinity, flow steering, coalescing) to re-check after every kernel or driver upgrade.",
+          "breaks_when": "The budget falls below roughly 100 µs: kernel delivery (about 4 µs busy-polling, about 8 µs idle) plus round-trip jitter (standard deviation of 9 to 33 µs in the same test) makes the firm lose races to faster rivals.",
+          "evidence": {
+            "kind": "source",
+            "ref": "https://blog.cloudflare.com/how-to-achieve-low-latency/",
+            "conditions": "2015 test: two Linux hosts with 2 GHz Xeon CPUs (2 x 6 cores, Hyper-Threading on), 10GbE NICs through one 10Gb switch, 32-byte UDP echo; minimum and average round trip over one-second runs. The 100 µs band edge is a rule of thumb: a few times the tuned path's delay plus jitter."
+          }
+        },
+        {
+          "band": "Tick-to-trade budget from roughly 100 µs down to about 2 µs: competitors are software firms on tuned hosts",
+          "pick": "Kernel bypass: a user-space network stack on a supported NIC, first through a sockets-compatible acceleration library, and through a raw frame API only if measurements demand it",
+          "why": "In the same 2015 test, kernel bypass cut delivery to the application from 4.3 µs to 0.47 µs and cut jitter about tenfold. An audited benchmark measured a mean of 2.3 µs half round trip between two applications at 100,000 and 1 million messages/s. A sockets-compatible library needs no change to application code.",
+          "cost": "Supported NICs (bypass is licence-activated on some adapters), isolated cores that spin continuously, vendor-specific tuning, and a second network stack to debug; a raw frame API also means writing UDP parsing and gap recovery yourself.",
+          "breaks_when": "The budget falls below about 2 µs, where rivals trade from hardware: audited FPGA stacks start an order 14 to 30 ns after the last needed bit arrives, while the best audited software socket path averaged 2.3 µs half round trip (different benchmarks, so compare orders of magnitude only).",
+          "evidence": {
+            "kind": "source",
+            "ref": "https://www.supermicro.com/en/pressreleases/supermicro-redhat-and-solarflare-set-world-record-performance-mark-double-digit",
+            "conditions": "STAC-N1 (2018): two servers with 2 x 8-core Xeon Gold 6144 overclocked to 4.18 GHz, RHEL 7.5, X2522 adapters with Onload; latency is round trip divided by two (method: https://docs.stacresearch.com/system/files/central/stac-n%20backgrounder%20-%20updated.pdf). Delivery-time figures: https://blog.cloudflare.com/how-to-achieve-low-latency/ (Onload on the client host only). No application change: https://www.amd.com/content/dam/amd/en/support/downloads/solarflare/quick-start-guides/SF-120482-CD-4_X2522-25G_online_Quick_Start_Guide.pdf. FPGA figures: https://docs.stacresearch.com/news/AMD240422 and https://docs.stacresearch.com/news/XLX200514. The 2 µs band edge is a rule of thumb anchored on the 2.3 µs mean."
+          }
+        },
+        {
+          "band": "Tick-to-trade budget below about 2 µs: the firm competes for queue position against traders whose order path is in hardware",
+          "pick": "FPGA: feed decode, trigger logic, pre-trade risk checks, and order send in hardware on an FPGA card or FPGA NIC; software only loads parameters and thresholds",
+          "why": "Audited tick-to-trade network I/O on FPGA stacks, from the last bit needed for the decision to the first bit of the order: minimum 13.9 ns (2024); minimum 24.2 ns and means of 27.9 to 29.2 ns (2020).",
+          "cost": "FPGA cards and network IP cores; hardware (RTL or HLS) engineers; simulation and wire-capture test rigs; every logic change waits for a hardware build-and-test cycle; the pre-trade checks required for market access must run in the same hardware path.",
+          "breaks_when": null,
+          "evidence": {
+            "kind": "source",
+            "ref": "https://docs.stacresearch.com/news/AMD240422",
+            "conditions": "STAC-T0: UDP in, TCP out, essentially no trading logic or market-specific protocol handling, wire timestamps. 2024: Exegy IP cores on an AMD Alveo UL3524 card in a Dell R7525 server. 2020: https://docs.stacresearch.com/news/XLX200514 (LDA IP cores on a Xilinx VU9P FPGA). The 2 µs band edge is a rule of thumb anchored on the 2.3 µs STAC-N1 mean for kernel bypass (https://www.supermicro.com/en/pressreleases/supermicro-redhat-and-solarflare-set-world-record-performance-mark-double-digit). Team and change-speed costs are a rule of thumb, not from these reports: they assume RTL or HLS engineers and logic that must be rebuilt and re-verified for each change."
+          }
+        }
+      ],
+      "migration": "Kernel to kernel bypass: often no code change with a sockets-compatible library, but new NICs, isolated busy-polling cores, and a fresh latency baseline measured with wire timestamps; moving to a raw frame API means writing UDP parsing, A/B arbitration, and gap recovery in the application. Kernel bypass to FPGA: decode and trigger logic are rewritten for hardware; the strategy process becomes a control plane that loads parameters; pre-trade risk checks move into the hardware path; testing moves to simulation plus replay of captured wire traffic.",
+      "teaching_moment": "The receive path is bought by the microsecond, and each band adds specialized hardware and skills, so the right band is set by how fast the fastest competitor reacts to the same update, not by how fast the firm could go.",
+      "catalog": "crossovers/latency-path.md"
+    },
+    {
+      "id": "clock-sync",
+      "name": "Clock synchronization for audit timestamps",
+      "job": "Keep every server's clock close enough to UTC that each order event's timestamp meets the regulator's tolerance and granularity, and keep the proof.",
+      "contract": {
+        "tolerance": "Clocks that record events in US NMS or OTC equity securities stay within 50 ms of NIST time (FINRA Rule 4590, https://www.finra.org/rules-guidance/rulebooks/finra-rules/4590).",
+        "granularity": "Timestamps to the millisecond at least, and at the finer increment if the firm's order systems already stamp finer (SEC Rule 613(d)(3)).",
+        "proof": "Every synchronization, and any drift beyond tolerance, is logged, and the log is kept as a broker-dealer record (FINRA Rule 4590, Supplementary Material .01)."
+      },
+      "axes": [
+        {
+          "name": "isolation_compliance",
+          "value": "US rules only: computer clocks within 50 ms of NIST time (source: https://www.finra.org/rules-guidance/rulebooks/finra-rules/4590); audit-trail timestamps at least to the millisecond (source: https://www.ecfr.gov/current/title-17/section-242.613)",
+          "notes": "A member of an EU venue that uses high-frequency algorithmic trading would need at most 100 µs from UTC and 0.1 µs granularity from 2 March 2026 (source: https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32025R1155); that is outside this plan's range."
+        },
+        {
+          "name": "geography",
+          "value": "Input assumption: US venues only",
+          "notes": "Adding an EU venue with high-frequency activity changes the binding rule, not the traffic."
+        },
+        {
+          "name": "team_ops_capacity",
+          "value": "Input assumption: no dedicated network or time engineer at the small end",
+          "notes": "PTP needs PTP-aware configuration on every switch hop, care of a GNSS antenna and grandmaster, and offset monitoring."
+        },
+        {
+          "name": "cost",
+          "value": "Input design: GNSS antenna, grandmaster, hardware-timestamping NICs, and PTP-capable switches",
+          "notes": "NTP runs on the servers' existing NICs and network."
+        },
+        {
+          "name": "latency",
+          "value": "Off the trading path: the strategy reads the clock and never waits for synchronization",
+          "notes": "Measuring the firm's own microsecond latencies is a separate job (for example hardware wire capture, as STAC-T0 does) and is not in this input."
+        }
+      ],
+      "binding_axis": "isolation_compliance",
+      "outcome": "substitute_down",
+      "options": [
+        {
+          "band": "Whole plan range on US venues: the binding rule is a 50 ms tolerance with millisecond timestamps",
+          "pick": "NTP client (for example chrony) on every server against at least three internal or provider time servers, with the synchronization log kept as a record and an alert on drift",
+          "why": "Typical NTP accuracy is within a few milliseconds over the Internet and within tens of microseconds on a LAN, well inside a 50 ms tolerance, and it uses the servers' existing NICs and switches.",
+          "cost": "A daemon and a config file per server, one drift alert, and the written procedure and log the rule requires. It gives up sub-microsecond agreement between hosts, which the audit contract in this range does not ask for.",
+          "breaks_when": "The firm starts high-frequency algorithmic trading on an EU venue (at most 100 µs from UTC and 0.1 µs granularity), or a new job needs events on different hosts lined up to within microseconds.",
+          "evidence": {
+            "kind": "source",
+            "ref": "https://www.finra.org/rules-guidance/rulebooks/finra-rules/4590",
+            "conditions": "Rule text: computer clocks that record events in NMS securities and OTC equity securities within 50 ms of the NIST clock, other business clocks within 1 s; sync log kept as a record. NTP accuracy: https://docs.redhat.com/en/documentation/red_hat_enterprise_linux/7/html/system_administrators_guide/ch-configuring_ntp_using_the_chrony_suite (typical, not guaranteed; asymmetric paths can add error the client cannot see, per https://chrony-project.org/faq.html). EU limits: https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32025R1155."
+          }
+        },
+        {
+          "band": "From the point the firm uses high-frequency algorithmic trading on an EU venue, or must line up events on different hosts to within microseconds",
+          "pick": "The input design: PTP with a GNSS-disciplined grandmaster, hardware-timestamping NICs, switches that act as transparent clocks, and independent offset monitoring",
+          "why": "The EU rule for high-frequency trading requires at most 100 µs divergence from UTC and 0.1 µs granularity. One large operator holds client offsets near ±100 ns with transparent clocks on every switch, where its NTP service gave millisecond precision.",
+          "cost": "Roof antenna and grandmaster with holdover, PTP-capable switches, NIC hardware clocks, monitoring, and engineers who can find path asymmetry; a documented traceability system reviewed at least once a year (EU rule). One switch without transparent-clock support moved that operator's offset from about ±100 ns to −400 µs.",
+          "breaks_when": null,
+          "evidence": {
+            "kind": "source",
+            "ref": "https://eur-lex.europa.eu/legal-content/EN/TXT/?uri=CELEX:32025R1155",
+            "conditions": "Delegated Regulation (EU) 2025/1155, Articles 13 and 16 and Annex IV Table 2, applying from 2 March 2026 and replacing Delegated Regulation (EU) 2017/574. PTP offsets: https://engineering.fb.com/2022/11/21/production-engineering/precision-time-protocol-at-meta/ (data-center fleet, 2022)."
+          }
+        }
+      ],
+      "migration": "Down: point each server's time daemon at NTP servers instead of the PTP grandmaster, keep the synchronization log and the drift alert, and stop buying PTP-capable switches and hardware-timestamping NICs for new racks. Up later: add hardware-timestamping NICs and PTP-capable switches, enable transparent clocks on every hop, install the GNSS antenna and grandmaster, and document traceability to UTC with a yearly review.",
+      "teaching_moment": "The tempting clock design is copied from high-frequency firms, but the binding axis here is a rule, not speed: the US tolerance is wide enough for ordinary NTP with room to spare, and a GNSS-fed PTP network pays off only when the firm's activity puts it under the EU's high-frequency limit.",
+      "catalog": "crossovers/latency-path.md"
+    },
+    {
+      "id": "audit-capture",
+      "name": "Order-event journal and next-day report",
+      "job": "Record every order, cancel, acknowledgment, and fill with its timestamp, keep the records, and produce the regulatory report and post-trade checks without slowing the strategy.",
+      "contract": {
+        "completeness": "No order event is lost, including across a process crash, and the record reconciles with an independent copy from the venue.",
+        "timeliness": "Events are recorded when they happen and reported to the consolidated audit trail by 8:00 a.m. Eastern Time on the next trading day (SEC Rule 613(c)(3)).",
+        "retention": "Order records are kept at least 3 years, the first 2 in an easily accessible place, with a complete time-stamped audit trail or in non-rewriteable, non-erasable form (SEC Rule 17a-4).",
+        "surveillance": "Surveillance staff receive execution reports immediately (SEC Rule 15c3-5(c)(2)(iv)).",
+        "hot_path_isolation": "The strategy thread never waits on disk, database, or network IO for this job."
+      },
+      "axes": [
+        {
+          "name": "durability",
+          "value": "Zero lost order events (RPO = 0 for the audit record)",
+          "notes": "Met by an append-only local journal written from another thread plus reconciliation against the venue's drop copy; the strategy thread waits for none of it."
+        },
+        {
+          "name": "isolation_compliance",
+          "value": "Report by 8:00 a.m. ET on the next trading day; retention at least 3 years with an audit trail or non-rewriteable storage",
+          "notes": "Sources: https://www.ecfr.gov/current/title-17/section-242.613 and https://www.ecfr.gov/current/title-17/section-240.17a-4. The deadline is the same at every scale in range."
+        },
+        {
+          "name": "data_volume",
+          "value": "Input assumption: thousands to a few million order events per day",
+          "notes": "Input assumption of about 200 bytes per event: about 1 GB per day or less at the top of the range."
+        },
+        {
+          "name": "latency",
+          "value": "Nothing added to the strategy's decision path",
+          "notes": "The strategy thread only copies a fixed-size record into an in-memory ring; another thread does the IO."
+        }
+      ],
+      "binding_axis": "durability",
+      "outcome": "keep",
+      "options": [
+        {
+          "band": "Whole plan range, from thousands to a few million order events per day: zero loss is required and the report is due the next morning at every scale",
+          "pick": "Keep the input design, made explicit: the strategy copies a fixed-size event into an in-memory ring; a journaler thread on another core appends it to a local append-only file and ships the file to retained storage with an audit trail; a nightly batch loads an ordinary database and builds the report; a daytime reconciler compares the journal with the venue's drop-copy session",
+          "why": "The binding deadline is 8:00 a.m. ET on the next trading day, so completeness matters and speed does not. Keeping IO on threads other than the decision thread is the pattern one low-latency exchange uses to keep its single business-logic thread free of IO. The venue's drop copy is a real-time, read-only feed of order events that catches anything a crash loses before the journal flush.",
+          "cost": "One extra thread and core, a local disk, a retained store with an audit trail or write-once mode, a nightly job, and a reconciliation report that someone reads every day.",
+          "breaks_when": null,
+          "evidence": {
+            "kind": "source",
+            "ref": "https://www.ecfr.gov/current/title-17/section-242.613",
+            "conditions": "Rule 613(c)(3): record contemporaneously; report by 8:00 a.m. ET on the trading day after the event. Retention and storage: https://www.ecfr.gov/current/title-17/section-240.17a-4. IO kept off the business-logic thread: https://martinfowler.com/articles/lmax.html (journaler and replicator run on separate threads around a ring buffer). Drop copy on a US equities venue: https://nasdaqtrader.com/content/technicalsupport/specifications/TradingProducts/drop2.2.pdf (real-time messages when an order is entered, canceled, executed, or broken; no order entry)."
+          }
+        }
+      ],
+      "migration": "None inside this range. If a rule later moves the reporting deadline into the trading day, add a streaming loader that reads the same journal; the strategy thread does not change.",
+      "teaching_moment": "Not every box on a low-latency diagram is latency-critical. The tempting upgrade is a replicated streaming platform or a synchronous database write before each order; both bring IO next to the hot path to beat a deadline that is the next morning. Keep the journal simple, keep it off the strategy thread, and reconcile it against the venue's own copy.",
+      "catalog": "crossovers/latency-path.md"
+    }
+  ],
+  "order": ["md-receive", "clock-sync", "audit-capture"]
+}
