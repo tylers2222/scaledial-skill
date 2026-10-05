@@ -26,7 +26,7 @@ if [ "${1:-}" = "--uninstall" ]; then
       if [ -L "$link" ]; then rm "$link" && echo "removed $link"; fi
     done
   done
-  uv tool uninstall explainer-video || true
+  uv tool uninstall scaledial-skill || true
   exit 0
 fi
 

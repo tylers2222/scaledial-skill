@@ -1,5 +1,5 @@
 [project]
-name = "explainer-video"
+name = "scaledial-skill"
 version = "0.1.0"
 description = "Scale-aware system-design explainer videos: plan, narrate, animate, check."
 requires-python = ">=3.10,<3.14"

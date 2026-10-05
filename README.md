@@ -1,4 +1,4 @@
-# explainer-video
+# scaledial-skill
 
 Agent skills plus a CLI that turn a system design into a narrated, animated explainer that is honest about scale: for each component, what job it does, which axis forces the choice, and where a smaller or larger option is the right one.
 
@@ -10,7 +10,7 @@ design doc ─▶ scale plan ─▶ you approve ─▶ fact check ─▶ script 
 ## Install
 
 ```bash
-git clone https://github.com/tylers2222/explainer-video && cd explainer-video
+git clone https://github.com/tylers2222/scaledial-skill && cd scaledial-skill
 ./install.sh            # CLI on PATH (editable), skills linked, voice model fetched
 explainer doctor        # check ffmpeg, cairo, pango, manim, voice model, optional ElevenLabs key
 ```
