@@ -71,7 +71,7 @@ class MarketDataPath(BeatScene):
         spin.next_to(strat, DOWN, buff=0.35)
         spin_lbl = label("pinned core polls", 18, YELLOW_).next_to(spin, DOWN, buff=0.15)
         with self.beat("bypass") as s:
-            self.play(FadeOut(pros), FadeOut(stop), ReplacementTransform(badge1, badge2), run_time=s * 0.08)
+            self.play(FadeOut(pros), FadeOut(stop), swap(badge1, badge2, RIGHT), run_time=s * 0.08)
             self.play(Create(arc_tip), FadeIn(dma), run_time=s * 0.18)
             pkt = Dot(nic.get_top(), color=YELLOW_, radius=0.1)
             self.play(MoveAlongPath(pkt, arc), run_time=s * 0.14)
@@ -85,7 +85,7 @@ class MarketDataPath(BeatScene):
                        label("✗ special NICs + software", 20, ORANGE_))
         cons2.arrange(DOWN, aligned_edge=LEFT, buff=0.18).to_corner(DR, buff=0.5)
         with self.beat("bypass_cost") as s:
-            self.play(ReplacementTransform(meter, meter2), run_time=s * 0.15)
+            self.play(swap(meter, meter2, RIGHT), run_time=s * 0.15)
             self.play(Rotate(spin, -2 * PI), FadeIn(cons2[0], shift=UP * 0.2), run_time=s * 0.25)
             self.play(Rotate(spin, -2 * PI), FadeIn(cons2[1], shift=UP * 0.2), run_time=s * 0.25)
 
@@ -98,7 +98,7 @@ class MarketDataPath(BeatScene):
         meter3 = label("tick-to-trade ≈ 100s of ns", 26, PURPLE_).move_to(meter2, aligned_edge=RIGHT)
         with self.beat("fpga") as s:
             self.play(FadeOut(cons2), FadeOut(spin), FadeOut(spin_lbl), FadeOut(arc_tip), FadeOut(dma),
-                      ReplacementTransform(badge2, badge3), run_time=s * 0.08)
+                      swap(badge2, badge3, RIGHT), run_time=s * 0.08)
             self.play(GrowArrow(a_nf), FadeIn(fpga, shift=UP * 0.2), run_time=s * 0.12)
             pkt = Dot(exch.get_right(), color=YELLOW_, radius=0.1)
             self.add(pkt)
@@ -107,7 +107,7 @@ class MarketDataPath(BeatScene):
             self.play(Flash(fpga, color=PURPLE_), pkt.animate.set_color(ORANGE_), run_time=s * 0.06)
             self.play(Create(order), FadeIn(order_lbl), run_time=s * 0.1)
             self.play(MoveAlongPath(pkt, order), run_time=s * 0.1)
-            self.play(FadeOut(pkt), ReplacementTransform(meter2, meter3), run_time=s * 0.1)
+            self.play(FadeOut(pkt), swap(meter2, meter3, RIGHT), run_time=s * 0.1)
 
         # ---- fpga cost ------------------------------------------------------
         cons3 = VGroup(label("✗ hardware is slow to change", 20, ORANGE_),

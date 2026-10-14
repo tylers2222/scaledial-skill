@@ -11,7 +11,7 @@ Use the same zones in every scene so the viewer learns where to look.
 | Header | top-left corner, `to_corner(UL, buff=0.4)` | Video or segment title, font 22 |
 | Band badge | top-right corner, `to_corner(UR, buff=0.4)` | Current band or level, font 24 |
 | Meter | under the badge, right-aligned | The binding-axis value for the current option |
-| Diagram row | y about 0.3, x from -6.6 to 6.6 | Up to 4 boxes of width 2.2 in a row, centres about 3.3 apart |
+| Diagram row | y about 0.3, x from -6.6 to 6.6 | Up to 4 boxes of width 2.2 in a row, centres about 3.3 apart. A box name wraps to fit, but a word longer than about 8 characters at font 26 widens the box: use 3 boxes per row then |
 | Below-diagram | y from -1.0 to -2.6, under the box it explains | Cost tags, failure tags, a substituted or added box |
 | Cost corner | bottom-right, `to_corner(DR, buff=0.5)` | Trade-off list for the current option. Replace it, do not stack it |
 | Footer | `to_edge(DOWN, buff=0.45)` | One-line takeaway |
@@ -34,5 +34,6 @@ Nothing below 16. At 1080p, 18 and above reads comfortably.
 ## Placement
 
 - Position relative to other objects (`next_to`, `arrange`, `move_to(other, aligned_edge=...)`) rather than absolute coordinates, so a longer label does not collide with its neighbour.
-- When a label replaces another in the same place, build the new one with `move_to(old, aligned_edge=RIGHT)` (or LEFT) so it does not jump.
+- When a label replaces another in the same place, use `swap(old, new, edge=RIGHT)` (or LEFT) so it does not jump and the letters do not scramble.
+- Text in a shape keeps 0.15 of space from each border. Text never overlaps other text. Text stays inside the frame. The render fails with `LayoutError` otherwise.
 - Arrows between boxes use `buff=0.1` so tips do not touch the box border.

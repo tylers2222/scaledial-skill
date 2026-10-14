@@ -51,7 +51,7 @@ Make the limit visible in the axis's own terms:
 
 1. One box with two labelled flows through it (for example reads and writes) in two colors.
 2. Dial up. One flow's visual hits its limit while the other does not.
-3. Transform the box into two boxes, each taking one flow. Name the new coordination cost under the pair.
+3. `swap(box, VGroup(box_a, box_b).arrange(RIGHT, buff=0.6))` replaces the box with two boxes, each taking one flow. Name the new coordination cost under the pair.
 
 ## remove
 
