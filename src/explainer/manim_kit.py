@@ -118,7 +118,7 @@ class BeatMixin:
         problems = hidden_text(self.mobjects)
         if problems:
             raise LowContrastError(
-                f"{self._where()}: text cannot be read on the shape behind or over it.\n" + "\n".join(problems) +
+                f"{self._where()}: text cannot be read on the shape behind it, or a filled shape covers it.\n" + "\n".join(problems) +
                 "\nset_opacity on a group also sets the fill of every shape in it. Build cards with box(), whose fill "
                 "stays a tint at any opacity, draw the text in a color that contrasts with the fill, and do not put a "
                 "filled shape over text that is still on screen.")
