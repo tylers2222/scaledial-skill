@@ -35,5 +35,5 @@ Nothing below 16. At 1080p, 18 and above reads comfortably.
 
 - Position relative to other objects (`next_to`, `arrange`, `move_to(other, aligned_edge=...)`) rather than absolute coordinates, so a longer label does not collide with its neighbour.
 - When a label replaces another in the same place, use `swap(old, new, edge=RIGHT)` (or LEFT) so it does not jump and the letters do not scramble.
-- Text in a shape keeps 0.15 of space from each border. Text never overlaps other text. Text stays inside the frame. The render fails with `LayoutError` otherwise.
+- Text in a shape keeps 0.08 of space from each border (`box()` keeps 0.2). Text never overlaps other text. Text stays inside the frame. The render fails with `LayoutError` otherwise.
 - Arrows between boxes use `buff=0.1` so tips do not touch the box border.

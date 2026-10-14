@@ -36,7 +36,7 @@ MONO = "Menlo"  # Pango kerns proportional fonts badly; keep text monospace.
 BOX_TINT = 0.12  # the fill opacity of a box, whatever opacity the box is set to
 MIN_CONTRAST = 1.5  # WCAG contrast ratio below which text on a filled shape counts as hidden
 BOX_PAD = 0.2  # space between a box's border and its text
-TEXT_INSET = 0.15  # the least space between text and the border of the shape it sits in
+TEXT_INSET = 0.08  # the least space between text and the border of the shape it sits in; less reads as touching
 EDGE = 0.05  # overlap smaller than this, between texts or past the frame edge, is not reported
 TEXT_TYPES = (Text, MarkupText, SingleStringMathTex)
 
