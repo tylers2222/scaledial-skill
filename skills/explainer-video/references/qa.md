@@ -19,6 +19,7 @@ The agent sees still frames, not motion. Flicker, a jump between two frames, or 
 - `WARNING beat <id> overran its audio slot`: the animations in that beat take longer than its audio. Shorten run_time fractions, or move a step to the next beat. Do not slow the voice.
 - `PROBLEM: video is Xs but timeline is Ys`: a beat overran or a beat was skipped in `scene.py`.
 - `word ... is not spoken`: a word cue names a word that is not in the spoken text. Check aliases.
+- `LowContrastError`: a text sits on a filled shape in nearly the same color, usually after `set_opacity` on a group. Build the card with `box()`, or give the text a contrasting color.
 
 ## Known failure types
 

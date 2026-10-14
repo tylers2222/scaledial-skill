@@ -12,6 +12,7 @@ Problems already met in real renders, with fixes. Add entries through the retro 
 
 - **`add_tip` changes path animations.** `ArcBetweenPoints(...).add_tip()` adds the tip as a submobject. `MoveAlongPath` over that object follows the tip too. Keep an untipped copy for the path and show the tipped copy.
 - **Animating objects not on screen.** `obj.animate` on an object never added raises or does nothing. Add it (`FadeIn`, `Create`, or `self.add`) first.
+- **Title hidden by its own card.** A hand-made card drew its title in the card color. `card.animate.set_opacity(1.0)` set the rectangle fill to 1.0 too, and the title vanished into the fill while it was narrated. Use `box()`. The kit now raises `LowContrastError` after each animation when text and the fill behind it have a contrast below 1.5:1.
 - **Text on top of text.** `Write(new)` on the same spot as old text leaves both. Use `ReplacementTransform(old, new)`.
 - **Clearing at the end of a segment.** `[m for m in self.mobjects if m is not header]` then `FadeOut` each. Keep the header.
 

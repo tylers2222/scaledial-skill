@@ -25,7 +25,7 @@ class Video(BeatScene):                  # BeatCameraScene for zoom and pan
 - Budget run_times as fractions of `s`. Keep the sum of fractions at or below about 0.85 so word cues and frame rounding have room.
 - `wait_until_word(word, occurrence=1)` and `until_word(word)` use the spoken form. They raise an error that lists the spoken words if the cue is wrong.
 - `self.component(id)` returns the plan entry. Take labels (`pick`, `band`, `cost`) from it so the screen cannot disagree with the plan.
-- `box(name, sub, color, x, y)`, `label(text, size, color)`, `swap(old, new)` for in-place substitution, and `ScaleDial(bands)` with `dial.to(i)`.
+- `box(name, sub, color, x, y, w, h)` for every component card, `label(text, size, color)`, `swap(old, new)` for in-place substitution, and `ScaleDial(bands)` with `dial.to(i)`. A box keeps its fill a faint tint at any opacity, so its title stays readable. Do not write your own card helper.
 - Palette constants: `BG`, `BLUE_`, `GREEN_`, `YELLOW_`, `RED_`, `PURPLE_`, `ORANGE_`, `GREY_`, `WHITE_`. Font: `MONO` (monospace, because Pango kerns proportional fonts badly).
 
 ## Procedure
@@ -43,7 +43,7 @@ class Video(BeatScene):                  # BeatCameraScene for zoom and pan
 - One idea moves at a time. The viewer's eye goes to motion.
 - Remove or replace what the narration has moved past. Stale labels are the most common QA failure.
 - Never animate the audio to fit. If a beat needs more visual time, split the beat in the script.
-- Opacity shows importance: active 1.0, context about 0.4, bypassed or removed about 0.18.
+- Opacity shows importance: active 1.0, context about 0.4, bypassed or removed about 0.18. `set_opacity` sets the fill too, so it turns a hand-made outline into a solid block. The render fails with `LowContrastError` when text sits on a fill it cannot be read on.
 
 ## Additional resources
 
